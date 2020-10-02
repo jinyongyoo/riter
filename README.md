@@ -1,2 +1,2 @@
 # RITER
-RITER: Real-time Image TExt Retreival
+RITER: Real-time Image Text Embedding Retreival
