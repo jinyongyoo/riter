@@ -1,0 +1,5 @@
+nltk
+pycocotools
+torch
+torchvision
+tqdm
