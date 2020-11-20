@@ -3,3 +3,5 @@ pycocotools
 torch
 torchvision
 tqdm
+filelock
+requests

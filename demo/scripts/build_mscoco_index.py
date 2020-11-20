@@ -9,8 +9,7 @@ from pycocotools.coco import COCO
 from PIL import Image
 
 from riter import JointEmbeddingIndex
-from riter.prebuilt import Tokenizer, ImageEncoder, TextEncoder
-from riter.prebuilt.config import COCO_GRU_CONFIG, COCO_RESNET_CONFIG
+from riter import AutoModel, AutoTokenizer, AutoTransformation
 
 
 class CocoDataset(torch.utils.data.Dataset):
@@ -26,25 +25,36 @@ class CocoDataset(torch.utils.data.Dataset):
     def __init__(self, img_root, transform, annotation_json, tokenizer):
         self.img_root = img_root
         self.coco = COCO(annotation_json)
-        self.ids = list(self.coco.anns.keys())
+        # For each image, there are multiple annotations. We'll justp pick the first pair.
+        annotation_ids = list(self.coco.anns.keys())
+        self.img_ids = set()
+        self.annotation_ids = {}
+        for i in annotation_ids:
+            if self.coco.anns[i]["image_id"] not in self.img_ids:
+                self.img_ids.add(self.coco.anns[i]["image_id"])
+                self.annotation_ids[self.coco.anns[i]["image_id"]] = []
+            self.annotation_ids[self.coco.anns[i]["image_id"]].append(i)
+        self.img_ids = list(self.img_ids)
+        self.img_ids.sort()
         self.transform = transform
         self.tokenizer = tokenizer
 
     def __getitem__(self, index):
-        _id = self.ids[index]
-        img_id = self.coco.anns[_id]["image_id"]
+        img_id = self.img_ids[index]
         img_file = self.coco.loadImgs(img_id)[0]["file_name"]
 
         image = Image.open(os.path.join(self.img_root, img_file)).convert("RGB")
         image = self.transform(image)
 
-        text = self.coco.anns[_id]["caption"]
+        text = " ".join(
+            [self.coco.anns[i]["caption"] for i in self.annotation_ids[img_id]]
+        )
         tokens = torch.tensor(self.tokenizer(text))
 
-        return _id, image, tokens
+        return img_id, image, tokens
 
     def __len__(self):
-        return len(self.ids)
+        return len(self.img_ids)
 
 
 def collate_fn(pad_token_id, data):
@@ -56,7 +66,7 @@ def collate_fn(pad_token_id, data):
     images = torch.stack(images, 0)
 
     # Merge captions (convert tuple of 1D tensor to 2D tensor)
-    lengths = [len(cap) for cap in captions]
+    lengths = torch.tensor([len(cap) for cap in captions], dtype=torch.int64)
     captions = torch.nn.utils.rnn.pad_sequence(
         captions, batch_first=True, padding_value=pad_token_id
     )
@@ -79,18 +89,6 @@ if __name__ == "__main__":
         help="Path to JSON file for annotations",
     )
     parser.add_argument(
-        "--prebuilt-path",
-        default="./saved/mscoco",
-        type=str,
-        help="Path to pretrained encoders and vocabulary",
-    )
-    parser.add_argument(
-        "--img-encoder-name",
-        default="resnet",
-        type=str,
-        help='Name of image encoder model (options: "resnet" and "vgg")',
-    )
-    parser.add_argument(
         "--batch-size", default=512, type=int, help="Batch size of processing data"
     )
     parser.add_argument(
@@ -104,31 +102,24 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    tokenizer_path = os.path.join(args.prebuilt_path, "coco_tokenizer.pkl")
-    tokenizer = Tokenizer.load(tokenizer_path)
-    transform = ImageEncoder.TRANSFORM
+    img_encoder = AutoModel.from_pretrained("vsepp-resnet-coco")
+    transformation = AutoTransformation.from_pretrained("vsepp-resnet-coco")
+    text_encoder = AutoModel.from_pretrained("vsepp-gru-coco")
+    tokenizer = AutoTokenizer.from_pretrained("vsepp-gru-coco")
+
+    index = JointEmbeddingIndex(
+        args.dim, img_encoder, transformation, text_encoder, tokenizer
+    )
 
     dataset = CocoDataset(
         args.img_data_path,
-        transform,
+        transformation,
         args.annotation_data_path,
         tokenizer,
     )
 
-    collate_fn = partial(collate_fn, tokenizer.word2idx(Tokenizer.PAD_TOKEN))
+    collate_fn = partial(collate_fn, tokenizer.pad_token_id)
 
-    img_encoder = ImageEncoder(**COCO_RESNET_CONFIG)
-    img_encoder.load_state_dict(
-        torch.load(os.path.join(args.prebuilt_path, "coco_resnet.pth"))
-    )
-    text_encoder = TextEncoder(**COCO_GRU_CONFIG)
-    text_encoder.load_state_dict(
-        torch.load(os.path.join(args.prebuilt_path, "coco_gru.pth"))
-    )
-
-    index = JointEmbeddingIndex(
-        args.dim, img_encoder, transform, text_encoder, tokenizer
-    )
     index.build(
         dataset, batch_size=args.batch_size, collate_fn=collate_fn, device="cuda"
     )
