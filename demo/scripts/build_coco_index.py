@@ -2,14 +2,14 @@ import os
 import pickle
 import argparse
 from functools import partial
+from collections import defaultdict 
 
 import torch
 import torchvision
 from pycocotools.coco import COCO
 from PIL import Image
 
-from riter import JointEmbeddingIndex
-from riter import AutoModel, AutoTokenizer, AutoTransformation
+from riter import JointEmbeddingIndex, AutoModel, AutoTokenizer, AutoTransformation
 
 
 class CocoDataset(torch.utils.data.Dataset):
@@ -25,17 +25,11 @@ class CocoDataset(torch.utils.data.Dataset):
     def __init__(self, img_root, transform, annotation_json, tokenizer):
         self.img_root = img_root
         self.coco = COCO(annotation_json)
-        # For each image, there are multiple annotations. We'll justp pick the first pair.
-        annotation_ids = list(self.coco.anns.keys())
-        self.img_ids = set()
+        # For each image, there are multiple annotations.
+        self.img_ids = list(self.coco.imgs.keys())
         self.annotation_ids = {}
-        for i in annotation_ids:
-            if self.coco.anns[i]["image_id"] not in self.img_ids:
-                self.img_ids.add(self.coco.anns[i]["image_id"])
-                self.annotation_ids[self.coco.anns[i]["image_id"]] = []
-            self.annotation_ids[self.coco.anns[i]["image_id"]].append(i)
-        self.img_ids = list(self.img_ids)
-        self.img_ids.sort()
+        for i in self.img_ids:
+            self.annotation_ids[i] = self.coco.getAnnIds(imgIds=[i])
         self.transform = transform
         self.tokenizer = tokenizer
 

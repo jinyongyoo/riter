@@ -59,6 +59,40 @@
 
       </div>
     </div>
+    <div class="row mb-4 py-4 px-0 px-md-4">
+      <div class="col-12 border rounded-lg p-4">
+
+        {{pagination.render_navigation()|safe}}
+
+        <div class="row text-center text-lg-left">
+          
+            {% for result in results %}
+
+            <div class="col-lg-3 col-md-4 col-6 mb-4">
+              <a href="http://images.cocodataset.org/{{split}}2017/{{result.image_id}}" class="d-blocks">
+                    <img class="img-fluid img-thumbnail" src="http://images.cocodataset.org/{{split}}2017/{{result.image_id}}" alt="{{result.caption}}"/>
+                  </a>
+                  <p class="text-muted px-2 text-smaller">
+                     {% for caption in result.caption %}
+                        <span>{{caption}}</span>
+                     {% endfor %}
+                  </p>
+            </div>
+
+            {% endfor %}
+
+            {% if results|length < 1 %}
+            <div class="col-12 mx-auto text-center p-12">
+                No images match your query.
+            </div>
+            {% endif %}
+
+        </div>
+
+        {{pagination.render_navigation()|safe}}
+
+      </div>
+    </div>
 
 
     <!-- Bootstrap core JavaScript

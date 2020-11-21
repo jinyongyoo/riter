@@ -187,7 +187,7 @@ class JointEmbeddingIndex(BaseIndex):
         logger.info(f"Finished building index.")
 
     def query(
-        self, query, top_k=20, query_type="text", index_type="both", reduction="mean"
+        self, query, top_k=20, min_score=0.2, query_type="text", index_type="both", reduction="mean"
     ):
         """
         Query index with `query`
@@ -247,11 +247,11 @@ class JointEmbeddingIndex(BaseIndex):
         elif query_type == "text":
             if isinstance(query, str):
                 text_tokens = self.tokenizer(query)
-                length = len(text_tokens)
+                length = torch.tensor([len(text_tokens)], dtype=torch.int64)
                 text_tokens = torch.tensor(text_tokens).unsqueeze(0)
                 with torch.no_grad():
                     query_vec = (
-                        self.text_encoder(text_tokens, [length]).detach().cpu().numpy()
+                        self.text_encoder(text_tokens, length).detach().cpu().numpy()
                     )
             else:
                 raise TypeError(
@@ -285,17 +285,20 @@ class JointEmbeddingIndex(BaseIndex):
             indices = sorted(
                 combined_scores, key=lambda k: combined_scores[k], reverse=True
             )[:top_k]
+            scores = [combined_scores[i] for i in indices]
 
         elif index_type == "image":
-            dist, indices = self._img_index.search(query_vec, top_k)
+            scores, indices = self._img_index.search(query_vec, top_k)
             indices = indices[0]
+            scores = scores[0]
         else:
-            dist, indices = self._text_index.search(query_vec, top_k)
+            scores, indices = self._text_index.search(query_vec, top_k)
             indices = indices[0]
+            scores = scores[0]
 
         # TODO check if sorting by dist is required
 
-        return [self._idx2guid[i] for i in indices]
+        return [self._idx2guid[i] for i,s in zip(indices, scores) if s >= min_score]
 
     def save(self, path):
         """Save index to directory. This involves saving the Faiss indices as
@@ -326,7 +329,8 @@ class JointEmbeddingIndex(BaseIndex):
         Args:
             path (str): Path of directory where the contents of this index is stored.
         """
-        assert os.path.exists(path)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"'{path}' cannot be found.")
 
         logger.info(f"Loading index from {path}")
 
@@ -638,7 +642,8 @@ class JointEmbeddingTfidfIndex(BaseIndex):
         Args:
             path (str): Path of directory where the contents of this index is stored.
         """
-        assert os.path.exists(path)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"'{path}' cannot be found.")
 
         logger.info(f"Loading index from {path}")
 
