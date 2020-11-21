@@ -3,7 +3,6 @@ from flask import render_template, request, send_from_directory
 import json
 import os
 import pickle
-import torch
 from pycocotools.coco import COCO
 
 from riter import JointEmbeddingIndex, AutoModel, AutoTokenizer, AutoTransformation

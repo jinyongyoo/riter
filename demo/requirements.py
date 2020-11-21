@@ -1,5 +1,4 @@
 flask
 riter
 pycocotools
-pagination
 requests
