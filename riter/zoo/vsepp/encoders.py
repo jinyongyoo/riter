@@ -156,13 +156,13 @@ class VseppTextEncoder(torch.nn.Module):
     def init_weights(self):
         self.embed.weight.data.uniform_(-0.1, 0.1)
 
-    def forward(self, x, lengths):
+    def forward(self, input_ids, lengths):
         """Handles variable size captions."""
-        device = x.device
+        device = input_ids.device
         # Embed word ids to vectors
-        x = self.embed(x)
+        input_ids = self.embed(input_ids)
         packed = torch.nn.utils.rnn.pack_padded_sequence(
-            x, lengths.cpu(), batch_first=True
+            input_ids, lengths.cpu(), batch_first=True
         )
 
         # Forward propagate RNN
@@ -171,7 +171,7 @@ class VseppTextEncoder(torch.nn.Module):
         # Reshape *final* output to (batch_size, hidden_size)
         padded = torch.nn.utils.rnn.pad_packed_sequence(out, batch_first=True)
         I = lengths.view(-1, 1, 1)
-        I = (I.expand(x.size(0), 1, self.embed_size) - 1).to(device)
+        I = (I.expand(input_ids.size(0), 1, self.embed_size) - 1).to(device)
         out = torch.gather(padded[0], 1, I).squeeze(1)
 
         # normalization in the joint embedding space

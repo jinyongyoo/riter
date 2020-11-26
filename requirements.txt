@@ -4,4 +4,4 @@ torch
 torchvision
 tqdm
 filelock
-requests
+gensim

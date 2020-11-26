@@ -1,5 +1,7 @@
-import torchvision
 from collections import OrderedDict
+
+import torch
+import torchvision
 
 VSEPP_TRANSFORMATIONS = OrderedDict(
     [
@@ -38,7 +40,9 @@ class VseppTransformation:
         self.transformation = transformation
 
     def __call__(self, img):
-        return self.transformation(img)
+        if isinstance(img, list):
+            return torch.stack([self.transformation(i) for i in img])
+        return self.transformation
 
     @classmethod
     def from_pretrained(cls, pretrained_name):

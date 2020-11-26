@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from .vsepp import VseppTransformation
+from .zoo.vsepp import VseppTransformation
 
 TRANSFORMATION_CLS_MAPPING = OrderedDict(
     [
@@ -24,7 +24,7 @@ class AutoTransformation:
         )
 
     @classmethod
-    def from_pretrained(cls, prebuilt_model_name):
+    def from_pretrained(cls, prebuilt_model_name: str):
         r"""
 
         Examples::

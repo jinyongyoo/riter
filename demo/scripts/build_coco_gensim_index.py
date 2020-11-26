@@ -8,6 +8,7 @@ import torch
 import torchvision
 from pycocotools.coco import COCO
 from PIL import Image
+import nltk
 
 from riter import (
     AutoModel,
@@ -35,10 +36,7 @@ if __name__ == "__main__":
         help="Path to JSON file for annotations",
     )
     parser.add_argument(
-        "--batch-size", default=512, type=int, help="Batch size of processing data"
-    )
-    parser.add_argument(
-        "--dim", default=1024, type=int, help="Dimension of joint-embedding"
+        "--batch-size", default=128, type=int, help="Batch size of processing data"
     )
     parser.add_argument(
         "--index-save-path",
@@ -74,7 +72,7 @@ if __name__ == "__main__":
     recipe = IndexRecipe()
     # Images should be indexed using Faiss L2 distance index with dimension of 1024
     recipe.add_faiss_index_recipe("image", 1024)
-    recipe.add_faiss_index_recipe("caption", 1024)
+    recipe.add_gensim_index_recipe("caption")
 
     # Create our index
     index = SimilarityIndex(schema, recipe)
@@ -82,14 +80,24 @@ if __name__ == "__main__":
     # Load our models from riter.zoo
     img_encoder = AutoModel.from_pretrained("vsepp-resnet-coco")
     transformation = AutoTransformation.from_pretrained("vsepp-resnet-coco")
-    text_encoder = AutoModel.from_pretrained("vsepp-gru-coco")
-    tokenizer = AutoTokenizer.from_pretrained("vsepp-gru-coco")
+
+    stop_words = set(nltk.corpus.stopwords.words("english"))
+    stemmer = nltk.stem.PorterStemmer()
+
+    def analyzer(text):
+        # tokenize
+        words = nltk.word_tokenize(text)
+        # stem words
+        words = [stemmer.stem(w) for w in words]
+        # remove stop words
+        words = [w for w in words if not w in stop_words]
+        return words
 
     index.build(
         documents,
-        {"image": img_encoder, "caption": text_encoder},
-        {"image": transformation, "caption": tokenizer},
-        batch_size=128,
+        {"image": img_encoder},
+        {"image": transformation, "caption": analyzer},
+        batch_size=args.batch_size,
     )
 
     index.save(args.index_save_path)

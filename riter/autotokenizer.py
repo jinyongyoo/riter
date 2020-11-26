@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from .vsepp import VseppTokenizer
+from .zoo.vsepp import VseppTokenizer
 
 TOKENIZER_CLS_MAPPING = OrderedDict(
     [
@@ -23,7 +23,7 @@ class AutoTokenizer:
         )
 
     @classmethod
-    def from_pretrained(cls, prebuilt_model_name):
+    def from_pretrained(cls, prebuilt_model_name: str):
         r"""
 
         Examples::

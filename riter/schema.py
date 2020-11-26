@@ -1,31 +1,47 @@
 from collections import OrderedDict
+from PIL.Image import Image
 
 from riter import utils
-from .document import Document
+from .fields import Field
 
-class Schema:
-    def __init__(self, schema=OrderedDict()):
-        self._schema = schema
 
-    def add_field(self, name: str, data_type, index_type):
-        if name in self._schema:
-            logger.info(f"Warning: field with name '{name}' already exists in the schema.")
+class Schema(OrderedDict):
+    def __init__(self, *args, **kwargs):
+        super(OrderedDict, self).__init__(*args, **kwargs)
 
-        self._schema[name] = (data_type, index_type)
+    def add_field(self, name: str, field: Field):
+        if name in self:
+            utils.logger.info(
+                f"Warning: field with name '{name}' already exists in the data schema."
+            )
+        self[name] = field
 
-    def remove_field(self, name: str):
-        if name in self._schema:
-            del self._schema[name]
-
-    def validate_document(self, doc: Document) -> bool:
-        for key, value in self._schema.item():
+    def check(self, doc: utils.data.Document) -> bool:
+        for name, field in self.items():
             if key not in doc.fields:
                 return False
             else:
-                dtype, _ = value
-                if isinstance(self._schema[key], dtype):
-                    return True
-                else:
-                    return False
+                return utils.type_check(doc[key], field.dtype)
 
 
+class IndexRecipe(OrderedDict):
+    def __init__(self, *args, **kwargs):
+        super(OrderedDict, self).__init__(*args, **kwargs)
+
+    def add_faiss_index_recipe(self, name, ndim):
+        if name in self:
+            utils.logger.info(
+                f"Warning: field with name '{name}' already exists in the index schema."
+            )
+
+        self[name] = {"type": "faiss", "ndim": ndim}
+
+    def add_gensim_index_recipe(self, name):
+        if name in self:
+            utils.logger.info(
+                f"Warning: field with name '{name}' already exists in the index schema."
+            )
+        self[name] = {"type": "gensim"}
+
+    def indexable_fields(self):
+        return self.keys()

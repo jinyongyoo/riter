@@ -1,6 +1,9 @@
-from . import pretrained
+from . import zoo
+from . import fields
+from . import utils
+
 from .automodel import AutoModel
 from .autotokenizer import AutoTokenizer
 from .autotransformation import AutoTransformation
-from .document import Document
-from .index import JointEmbeddingIndex
+from .schema import Schema, IndexRecipe
+from .index import SimilarityIndex

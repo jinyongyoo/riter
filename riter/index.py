@@ -1,304 +1,198 @@
-from abc import ABC, abstractmethod
 import os
 import pickle
 import faiss
 import PIL
 import torch
 from tqdm import tqdm
+import gensim
 import numpy as np
+from collections import defaultdict
 
-from .utils import logger
-import gc
-
-
-class BaseIndex:
-    """Base class representing an retreival index."""
-
-    @abstractmethod
-    def build(self):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def query(self):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def save(self, path):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def load(self, path):
-        raise NotImplementedError()
+from riter import fields, utils
 
 
-class JointEmbeddingIndex(BaseIndex):
+class SimilarityIndex:
     """
-    Index for the joint embedding space of images and text.
-    It is composed of two faiss indices: (1) image index, (2) text index.
-    Image index contains the vector representations of images, while text index contains the vector representation of text/captions.
-    The idea is that given a query (e.g. string), we query both indices and combine the results.
+    Index that uses mutimodal embedding space of images and text.
     Similarity is measured using cosine similarity of the vectors.
 
     Args:
-        dim (int): The dimension size of the faiss index.
-        img_encoder (torch.nn.Module): The model for encoding image into a dense vector representation.
-        transformation (torchvision.Transforms): The transformation steps applied to PIL.Image.Image objects to turn them into tensors.
-        text_encoder (torch.nn.Module): The model for encoding text into a dense vector representation.
-        tokenizer (obj): Tokenizer that when called (via `__call__`), returns list of ids that could be converted into a tensor and passed
-            to the `text_encoder`.
+        ndim (int): The dimension size of the faiss index.
+        schema (riter.Schema): Schema object.
     """
 
-    def __init__(self, dim, img_encoder, transformation, text_encoder, tokenizer):
-        self.dim = dim
-        self.img_encoder = img_encoder
-        self.transformation = transformation
-        self.text_encoder = text_encoder
-        self.tokenizer = tokenizer
+    def __init__(self, schema, index_recipe):
+        self.schema = schema
+        self.recipe = index_recipe
 
-        self._guid2idx = {}
-        self._idx2guid = []
-        self._img_index = faiss.IndexFlatIP(self.dim)
-        self._text_index = faiss.IndexFlatIP(self.dim)
+        for name in self.recipe:
+            if name not in self.schema:
+                raise ValueError(
+                    f"Field {name} cannot be found in data schema. Please first add it to the data schema."
+                )
 
-        self.img_encoder.eval()
-        self.text_encoder.eval()
+        self._doc2idx = {}
+        self._idx2doc = []
 
-    def _process_data(self, dataset, batch_size, collate_fn, device):
-        if not isinstance(dataset, torch.utils.data.Dataset):
-            raise ValueError("`dataset` must be of type `torch.utils.data.Dataset`.")
+        self._indices = {}
+        for fname in self.recipe.indexable_fields():
+            if self.recipe[fname]["type"] == "faiss":
+                self._indices[fname] = faiss.IndexFlatIP(self.recipe[fname]["ndim"])
+            elif self.recipe[fname]["type"] == "gensim":
+                self._indices[fname] = None
+            else:
+                raise ValueError(
+                    f"Index type {self.recipe[fname]['type']} unavailable."
+                )
 
-        if len(dataset) <= 0:
-            raise ValueError("`dataset` must have size greater than 0.")
+    def build(self, documents, encoders, preprocessors, batch_size=32):
+        utils.logger.info(f"Building index.")
+        orig_n = len(documents)
+        i = len(self._idx2doc)
+        for d in documents:
+            doc = utils.Document(d)
+            if self.schema.check(doc):
+                documents.append(doc)
+                self._doc2idx[doc] = i
+                i += 1
 
-        self.img_encoder.to(device)
-        self.text_encoder.to(device)
+        self._idx2doc.extend(documents)
 
-        dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, collate_fn=collate_fn
-        )
-        i = 0
-        img_vecs = []
-        text_vecs = []
+        if len(documents) != orig_n:
+            utils.logger.info(
+                f"Filtered out {orig_n-len(documents)} documents that does not match the schema."
+            )
 
-        logger.info(f"Processing dataset of size {len(dataset)}.")
-        with torch.no_grad():
-            for batch in tqdm(dataloader):
-                # Run basic checks
-                if len(batch) < 2:
-                    raise ValueError(
-                        "Tuple returned by `dataset` must contain at least two elements."
+        doc_dataset = utils.DocDataset(documents, self.schema)
+        for name in self.recipe.indexable_fields():
+            utils.logger.info(f"Processing field '{name}'.")
+            doc_dataset.set_field(name)
+            vectors = []
+            if self.recipe[name]["type"] == "faiss":
+                if name not in encoders:
+                    raise ValueError(f"Cannot find encoder for field '{name}'")
+                if name not in preprocessors:
+                    raise ValueError(f"Cannot find preprocessor for field '{name}'")
+                dataloader = torch.utils.data.DataLoader(
+                    doc_dataset,
+                    batch_size=batch_size,
+                    pin_memory=True,
+                    num_workers=2,
+                    collate_fn=preprocessors[name],
+                )
+
+                encoder = encoders[name]
+                encoder.eval()
+                encoder.to(utils.device)
+
+                with torch.no_grad():
+                    for inputs in tqdm(dataloader):
+                        if isinstance(inputs, dict):
+                            for k in inputs:
+                                inputs[k] = inputs[k].to(utils.device)
+                            outputs = encoder(**inputs)
+                        elif isinstance(inputs, (list, tuple)):
+                            inputs = list(inputs)
+                            for i in range(len(inputs)):
+                                inputs[i] = inputs[i].to(utils.device)
+                            outputs = encoder(*inputs)
+                        else:
+                            inputs = inputs.to(utils.device)
+                            outputs = encoder(inputs)
+
+                        vectors.append(outputs.detach().cpu())
+
+                vectors = torch.cat(vectors, dim=0).detach().numpy()
+                faiss.normalize_L2(vectors)
+                self._indices[name].add(vectors)
+
+            elif self.recipe[name]["type"] == "gensim":
+                if name not in preprocessors:
+                    raise ValueError(f"Cannot find preprocessor for field '{name}'")
+                analyzer = preprocessors[name]
+                corpus = []
+                for i in range(len(doc_dataset)):
+                    text = doc_dataset[i]
+                    words = analyzer(text)
+                    corpus.append(words)
+                dictionary = gensim.corpora.Dictionary(corpus)
+                bow_corpus = [dictionary.doc2bow(c) for c in corpus]
+                tfidf_model = gensim.models.TfidfModel(bow_corpus)
+                self._indices[name] = (
+                    dictionary,
+                    tfidf_model,
+                    gensim.similarities.SparseMatrixSimilarity(
+                        bow_corpus, num_features=len(dictionary)
                     )
-                if not (isinstance(batch[0][0], int) or isinstance(batch[0][0], str)):
-                    raise ValueError(
-                        "First element of tuple returned by `dataset` must be an integer or a string (ID must be hashable)"
-                    )
+                )
 
-                ids = batch[0]
-                for _id in ids:
-                    self._guid2idx[_id] = i
-                    self._idx2guid.append(_id)
-                    i += 1
+        utils.logger.info(f"Finished building index.")
 
-                text_input = None
-                if isinstance(batch[1], torch.Tensor) and len(batch[1][0].shape) >= 2:
-                    # `batch[1]` is an image tensor
-                    img = batch[1].to(device)
-                    img_vec = self.img_encoder(img)
-                    img_vecs.append(img_vec.detach().cpu())
-                else:
-                    # `batch[1]` is an token tensor
-                    text_input = batch[1]
+    def get(self, docid):
+        return self._idx2doc[self._doc2idx[docid]]
 
-                if len(batch) == 3:
-                    # If `batch` has three elements, then third element is token tensor
-                    text_input = batch[2]
-
-                if text_input is not None:
-                    # Handle different formats of `text_input`
-                    if isinstance(text_input, dict):
-                        for k in text_input:
-                            if isinstance(text_input[k], torch.Tensor):
-                                text_input[k] = text_input[k].to(device)
-
-                        text_vec = self.text_encoder(**text_input)
-
-                    elif isinstance(text_input, tuple) or isinstance(text_input, list):
-                        if isinstance(text_input, tuple):
-                            text_input = list(text_input)
-                        for k in range(len(text_input)):
-                            if isinstance(text_input[k], torch.Tensor):
-                                text_input[k] = text_input[k].to(device)
-
-                        text_vec = self.text_encoder(*text_input)
-
-                    text_vecs.append(text_vec.detach().cpu())
-
-        if img_vecs:
-            img_vecs = torch.cat(img_vecs, dim=0).detach().numpy()
-        else:
-            img_vecs = None
-        if text_vecs:
-            text_vecs = torch.cat(text_vecs, dim=0).detach().numpy()
-        else:
-            text_vecs = None
-
-        np.save("mscoco_img", img_vecs)
-        np.save("mscoco_text", text_vecs)
-
-        return img_vecs, text_vecs
-
-    def _add_to_index(self, index, data):
-        """Add `data` to faiss `index`. Because we want to use cosine similarity as our measure,
-        we first normalize the vectors.
-
-        Args:
-            index (faiss.Index): Faiss index to which we are adding `data`.
-            data (np.ndarray): Numpy 2D array of N x D where N is number of samples and D is dimension of vector representation of each sample.
-        """
-        faiss.normalize_L2(data)
-        index.add(data)
-
-    def build(self, dataset, batch_size=32, collate_fn=None, device="cpu"):
-        """Build the index of `dataset`
-        Args:
-            dataset (torch.utils.data.Dataset): PyTorch map-style object that returns tuple of `(id, image_tensor, token_tensor)`
-            or `(id, image_tensor)` or `(id, token_tensor)`. Image tensor is expected to be 2D and token tensor is expected to be 1-D.
-                when elements are accessed using `__getitem__`.
-            batch_size (int): Batch size for processing
-            collate_fn (Callable): function used for creating a batch of samples.
-            device (str|torch.device): Torch device to run the models. It can either be a string specifiying the device (e.g. "cuda:1")
-                or the actual device object. Default is "cpu".
-            parallel (bool): If True, wrap the models in `torch.nn.DataParallel` and run in parallel.
-        """
-        logger.info(f"Building joint embedding index.")
-        if isinstance(device, str):
-            device = torch.device(device)
-
-        img_vecs, text_vecs = self._process_data(
-            dataset, batch_size, collate_fn, device
-        )
-
-        if img_vecs is not None:
-            self._add_to_index(self._img_index, img_vecs)
-
-        if text_vecs is not None:
-            self._add_to_index(self._text_index, text_vecs)
-
-        logger.info(f"Finished building index.")
-
-    def query(
-        self, query, top_k=20, min_score=0.2, query_type="text", index_type="both", reduction="mean"
+    def search(
+        self, query, encoders, preprocessors, top_k=100, score_weights={}, min_score=0.2
     ):
         """
-        Query index with `query`
+        Search index with `query`
         Args:
-            query (Union[str|PIL.Image.Image']): Query could either be a string (e.g. for retreiving image using text queries)
-                or a PIL image (e.g. for retreiving relevant captions for a given image).
-            top_k (int): The top-K results to return.
-            query_type (str): The type of query. Options are "text" or "image".
-            index_type (str): The type of index to perform lookup. Options are "both", "image", and "text".
-                "both" attempts to look up both image and text indices and combine the results via `reduction` method.
-                "image" only looks at the image index, while "text" only looks at the text index.
-            reduction (str): The type of reduction to perform when `index_type == "both"` (options: "mean", "sum", "max").
-                "mean" takes the score of image index and text index and average them. "sum" performs a simple summation.
-                "max" takes the largest one as the score for the particular image/document.
+            query (dict[str, object]): query is a dictionary where keys are field names and values are the query values.
+            top_k (int): The top-K results to return for each field.
+            score_weights (dict[str, float]): dictionary where keys are field names and values are weight values for each field.
         Returns:
-            results (list[str|int]): List of global unique IDs of the top-K documents.
+            list[Documents]: list of relative documents.
         """
-        if query_type not in {"text", "image"}:
-            raise ValueError(
-                '`query_type` must be one of the following: `["text", "image"]'
-            )
-        if index_type not in {"both", "image", "text"}:
-            raise ValueError(
-                '`index_type` must be one of the following: `["both", "image", "text"]'
-            )
-        if reduction not in {"mean", "sum", "max"}:
-            raise ValueError(
-                '`reduction` must be one of the following: `["mean", "sum", "max"]'
-            )
-        if not isinstance(top_k, int):
-            raise ValueError("`top_k` parameter must be an integer")
-
-        if index_type == "both" and not (
-            self._img_index.ntotal > 0 and self._text_index.ntotal > 0
-        ):
-            return ValueError(
-                'Cannot run query with `index_type=="both"` when image and text indices are empty'
-            )
-        if index_type == "image" and not self._img_index.ntotal > 0:
-            return ValueError(
-                'Cannot run query with `index_type=="image"` when image index is empty.'
-            )
-        if index_type == "text" and not self._text_index.ntotal > 0:
-            return ValueError(
-                'Cannot run query with `index_type=="text"` when image index is empty.'
-            )
-
-        if query_type == "image":
-            if isinstance(query, PIL.Image.Image):
-                image = self.transformation(query)
-                with torch.no_grad():
-                    query_vec = self.img_encoder(image).detach().cpu().numpy()
-            else:
-                raise TypeError(
-                    f'Type mismatch: `query_type=="image"` but `query` is of type {type(query)}.'
-                )
-        elif query_type == "text":
-            if isinstance(query, str):
-                text_tokens = self.tokenizer(query)
-                length = torch.tensor([len(text_tokens)], dtype=torch.int64)
-                text_tokens = torch.tensor(text_tokens).unsqueeze(0)
-                with torch.no_grad():
-                    query_vec = (
-                        self.text_encoder(text_tokens, length).detach().cpu().numpy()
+        if not score_weights:
+            n = len(query.keys())
+            for field_name in query:
+                score_weights[field_name] = 1 / n
+        total_scores = defaultdict(lambda: 0.0)
+        for field_name in query:
+            value = query[field_name]
+            if self.recipe[field_name]["type"] == "faiss":
+                if field_name not in encoders:
+                    raise ValueError(f"Cannot find encoder for field '{field_name}'")
+                if field_name not in preprocessors:
+                    raise ValueError(
+                        f"Cannot find preprocessor for field '{field_name}'"
                     )
-            else:
-                raise TypeError(
-                    f'Type mismatch: `query_type=="text"` but `query` is of type {type(query)}.'
-                )
-        else:
-            raise ValueError(
-                "`query` must either be a string or instance of `PIL.Image.Image` class."
-            )
+                encoder = encoders[field_name]
+                encoder.eval()
+                preprocessor = preprocessors[field_name]
+                value = preprocessor(value)
+                with torch.no_grad():
+                    if isinstance(value, dict):
+                        query_vec = encoder(**value).detach().numpy()
+                    elif isinstance(inputs, (list, tuple)):
+                        query_vec = encoder(*value).detach().numpy()
+                    else:
+                        query_vec = encoder(value).detach().numpy()
+                faiss.normalize_L2(query_vec)
+                scores, indices = self._indices[field_name].search(query_vec, top_k)
+                indices = indices[0]
+                scores = scores[0]
+                results = zip(indices, scores)
 
-        # normalize the vector
-        faiss.normalize_L2(query_vec)
+            elif self.recipe[field_name]["type"] == "gensim":
+                dictionary, model, index = self._indices[field_name]
+                if field_name not in preprocessors:
+                    raise ValueError(
+                        f"Cannot find preprocessor for field '{field_name}'"
+                    )
+                words = preprocessors[field_name](value)
+                query_bow = dictionary.doc2bow(words)
+                results = list(enumerate(index[model[query_bow]]))
 
-        if index_type == "both":
-            img_dist, img_indices = self._img_index.search(query_vec, top_k)
-            text_dist, text_indices = self._text_index.search(query_vec, top_k)
+            for idx, score in results:
+                total_scores[idx] += score_weights[field_name] * score
 
-            # Apply reduction
-            combined_scores = {}
-            for score, idx in zip(img_dist[0], img_indices[0]):
-                combined_scores[idx] = score
-            for score, idx in zip(text_dist[0], text_indices[0]):
-                if idx in combined_scores:
-                    if reduction == "mean":
-                        combined_scores[idx] = (combined_scores[idx] + score) / 2
-                    elif reduction == "sum":
-                        combined_scores[idx] += score
-                    elif reduction == "max":
-                        combined_scores[idx] = max(combined_scores[idx], score)
+            indices = sorted(indices, key=lambda k: total_scores[k], reverse=True)[
+                :top_k
+            ]
+            scores = [total_scores[i] for i in indices]
 
-            indices = sorted(
-                combined_scores, key=lambda k: combined_scores[k], reverse=True
-            )[:top_k]
-            scores = [combined_scores[i] for i in indices]
-
-        elif index_type == "image":
-            scores, indices = self._img_index.search(query_vec, top_k)
-            indices = indices[0]
-            scores = scores[0]
-        else:
-            scores, indices = self._text_index.search(query_vec, top_k)
-            indices = indices[0]
-            scores = scores[0]
-
-        # TODO check if sorting by dist is required
-
-        return [self._idx2guid[i] for i,s in zip(indices, scores) if s >= min_score]
+        return [(self._idx2doc[i], score) for i, score in zip(indices, scores)]
 
     def save(self, path):
         """Save index to directory. This involves saving the Faiss indices as
@@ -310,351 +204,72 @@ class JointEmbeddingIndex(BaseIndex):
         if not os.path.exists(path):
             os.makedirs(path)
 
-        logger.info(f"Saving index at {path}")
+        utils.logger.info(f"Saving index at {path}")
 
-        img_index_path = os.path.join(path, "img.index")
-        faiss.write_index(self._img_index, img_index_path)
+        for fname in self.recipe.indexable_fields():
+            index_path = os.path.join(path, f"{fname}.index")
+            if self.recipe[fname]["type"] == "faiss":
+                faiss.write_index(self._indices[fname], index_path)
+            elif self.recipe[fname]["type"] == "gensim":
+                dictionary, model, index = self._indices[fname]
+                dictionary.save(os.path.join(path, f"{fname}_gensim.dict"))
+                model.save(os.path.join(path, f"{fname}_gensim.model"))
+                index.save(os.path.join(path, f"{fname}_gensim.index"))
 
-        text_index_path = os.path.join(path, "text.index")
-        faiss.write_index(self._text_index, text_index_path)
+        doc2idx_path = os.path.join(path, "mapping.pkl")
+        document_path = os.path.join(path, "documents.pkl")
+        schema_path = os.path.join(path, "schema.pkl")
+        recipe_path = os.path.join(path, "recipe.pkl")
+        with open(document_path, "wb") as f:
+            pickle.dump(self._idx2doc, f)
+        with open(doc2idx_path, "wb") as f:
+            pickle.dump(self._doc2idx, f)
+        with open(schema_path, "wb") as f:
+            pickle.dump(self.schema, f)
+        with open(recipe_path, "wb") as f:
+            pickle.dump(self.recipe, f)
 
-        id_mapping = (self._guid2idx, self._idx2guid)
-        id_mapping_path = os.path.join(path, "mappings.pkl")
-        with open(id_mapping_path, "wb") as f:
-            pickle.dump(id_mapping, f)
-
-    def load(self, path):
-        """Load Faiss indices and id mappings.
-
-        Args:
-            path (str): Path of directory where the contents of this index is stored.
-        """
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"'{path}' cannot be found.")
-
-        logger.info(f"Loading index from {path}")
-
-        id_mapping_path = os.path.join(path, "mappings.pkl")
-        with open(id_mapping_path, "rb") as f:
-            self._guid2idx, self._idx2guid = pickle.load(f)
-
-        img_index_path = os.path.join(path, "img.index")
-        assert os.path.exists(img_index_path)
-        self._img_index = faiss.read_index(img_index_path)
-
-        text_index_path = os.path.join(path, "text.index")
-        assert os.path.exists(text_index_path)
-        self._text_index = faiss.read_index(text_index_path)
-
-
-class JointEmbeddingTfidfIndex(BaseIndex):
-    """
-    Index for the joint embedding space of images and text.
-    It is composed of two faiss indices: (1) image index, (2) text index.
-    Image index contains the vector representations of images, while text index contains the vector representation of text/captions.
-    The idea is that given a query (e.g. string), we query both indices and combine the results.
-    Similarity is measured using cosine similarity of the vectors.
-
-    Args:
-        dim (int): The dimension size of the faiss index.
-        img_encoder (torch.nn.Module): The model for encoding image into a dense vector representation.
-        transformation (torchvision.Transforms): The transformation steps applied to PIL.Image.Image objects to turn them into tensors.
-        text_encoder (torch.nn.Module): The model for encoding text into a dense vector representation.
-        tokenizer (obj): Tokenizer that when called (via `__call__`), returns list of ids that could be converted into a tensor and passed
-            to the `text_encoder`.
-    """
-
-    def __init__(self, dim, img_encoder, transformation, text_encoder, tokenizer):
-        self.dim = dim
-        self.img_encoder = img_encoder
-        self.transformation = transformation
-        self.text_encoder = text_encoder
-        self.tokenizer = tokenizer
-
-        self._guid2idx = {}
-        self._idx2guid = []
-        self._img_index = faiss.IndexFlatIP(self.dim)
-        self._text_index = faiss.IndexFlatIP(self.dim)
-
-        self.img_encoder.eval()
-        self.text_encoder.eval()
-
-    def _process_data(self, dataset, batch_size, collate_fn, device):
-        if not isinstance(dataset, torch.utils.data.Dataset):
-            raise ValueError("`dataset` must be of type `torch.utils.data.Dataset`.")
-
-        if len(dataset) <= 0:
-            raise ValueError("`dataset` must have size greater than 0.")
-
-        self.img_encoder.to(device)
-        self.text_encoder.to(device)
-
-        dataloader = torch.utils.data.DataLoader(
-            dataset, batch_size=batch_size, collate_fn=collate_fn
-        )
-        i = 0
-        img_vecs = []
-        text_vecs = []
-
-        logger.info(f"Processing dataset of size {len(dataset)}.")
-        with torch.no_grad():
-            for batch in tqdm(dataloader):
-                # Run basic checks
-                if len(batch) < 2:
-                    raise ValueError(
-                        "Tuple returned by `dataset` must contain at least two elements."
-                    )
-                if not (isinstance(batch[0][0], int) or isinstance(batch[0][0], str)):
-                    raise ValueError(
-                        "First element of tuple returned by `dataset` must be an integer or a string (ID must be hashable)"
-                    )
-
-                ids = batch[0]
-                for _id in ids:
-                    self._guid2idx[_id] = i
-                    self._idx2guid.append(_id)
-                    i += 1
-
-                text_input = None
-                if isinstance(batch[1], torch.Tensor) and len(batch[1][0].shape) >= 2:
-                    # `batch[1]` is an image tensor
-                    img = batch[1].to(device)
-                    img_vec = self.img_encoder(img)
-                    img_vecs.append(img_vec.detach().cpu())
-                else:
-                    # `batch[1]` is an token tensor
-                    text_input = batch[1]
-
-                if len(batch) == 3:
-                    # If `batch` has three elements, then third element is token tensor
-                    text_input = batch[2]
-
-                if text_input is not None:
-                    # Handle different formats of `text_input`
-                    if isinstance(text_input, dict):
-                        for k in text_input:
-                            if isinstance(text_input[k], torch.Tensor):
-                                text_input[k] = text_input[k].to(device)
-
-                        text_vec = self.text_encoder(**text_input)
-
-                    elif isinstance(text_input, tuple) or isinstance(text_input, list):
-                        if isinstance(text_input, tuple):
-                            text_input = list(text_input)
-                        for k in range(len(text_input)):
-                            if isinstance(text_input[k], torch.Tensor):
-                                text_input[k] = text_input[k].to(device)
-
-                        text_vec = self.text_encoder(*text_input)
-
-                    text_vecs.append(text_vec.detach().cpu())
-
-        if img_vecs:
-            img_vecs = torch.cat(img_vecs, dim=0).detach().numpy()
-        else:
-            img_vecs = None
-        if text_vecs:
-            text_vecs = torch.cat(text_vecs, dim=0).detach().numpy()
-        else:
-            text_vecs = None
-
-        np.save("mscoco_img", img_vecs)
-        np.save("mscoco_text", text_vecs)
-
-        return img_vecs, text_vecs
-
-    def _add_to_index(self, index, data):
-        """Add `data` to faiss `index`. Because we want to use cosine similarity as our measure,
-        we first normalize the vectors.
-
-        Args:
-            index (faiss.Index): Faiss index to which we are adding `data`.
-            data (np.ndarray): Numpy 2D array of N x D where N is number of samples and D is dimension of vector representation of each sample.
-        """
-        faiss.normalize_L2(data)
-        index.add(data)
-
-    def build(self, dataset, batch_size=32, collate_fn=None, device="cpu"):
-        """Build the index of `dataset`
-        Args:
-            dataset (torch.utils.data.Dataset): PyTorch map-style object that returns tuple of `(id, image_tensor, token_tensor)`
-            or `(id, image_tensor)` or `(id, token_tensor)`. Image tensor is expected to be 2D and token tensor is expected to be 1-D.
-                when elements are accessed using `__getitem__`.
-            batch_size (int): Batch size for processing
-            collate_fn (Callable): function used for creating a batch of samples.
-            device (str|torch.device): Torch device to run the models. It can either be a string specifiying the device (e.g. "cuda:1")
-                or the actual device object. Default is "cpu".
-            parallel (bool): If True, wrap the models in `torch.nn.DataParallel` and run in parallel.
-        """
-        logger.info(f"Building joint embedding index.")
-        if isinstance(device, str):
-            device = torch.device(device)
-
-        img_vecs, text_vecs = self._process_data(
-            dataset, batch_size, collate_fn, device
-        )
-
-        if img_vecs is not None:
-            self._add_to_index(self._img_index, img_vecs)
-
-        if text_vecs is not None:
-            self._add_to_index(self._text_index, text_vecs)
-
-        logger.info(f"Finished building index.")
-
-    def query(
-        self, query, top_k=20, query_type="text", index_type="both", reduction="mean"
-    ):
-        """
-        Query index with `query`
-        Args:
-            query (Union[str|PIL.Image.Image']): Query could either be a string (e.g. for retreiving image using text queries)
-                or a PIL image (e.g. for retreiving relevant captions for a given image).
-            top_k (int): The top-K results to return.
-            query_type (str): The type of query. Options are "text" or "image".
-            index_type (str): The type of index to perform lookup. Options are "both", "image", and "text".
-                "both" attempts to look up both image and text indices and combine the results via `reduction` method.
-                "image" only looks at the image index, while "text" only looks at the text index.
-            reduction (str): The type of reduction to perform when `index_type == "both"` (options: "mean", "sum", "max").
-                "mean" takes the score of image index and text index and average them. "sum" performs a simple summation.
-                "max" takes the largest one as the score for the particular image/document.
-        Returns:
-            results (list[str|int]): List of global unique IDs of the top-K documents.
-        """
-        if query_type not in {"text", "image"}:
-            raise ValueError(
-                '`query_type` must be one of the following: `["text", "image"]'
-            )
-        if index_type not in {"both", "image", "text"}:
-            raise ValueError(
-                '`index_type` must be one of the following: `["both", "image", "text"]'
-            )
-        if reduction not in {"mean", "sum", "max"}:
-            raise ValueError(
-                '`reduction` must be one of the following: `["mean", "sum", "max"]'
-            )
-        if not isinstance(top_k, int):
-            raise ValueError("`top_k` parameter must be an integer")
-
-        if index_type == "both" and not (
-            self._img_index.ntotal > 0 and self._text_index.ntotal > 0
-        ):
-            return ValueError(
-                'Cannot run query with `index_type=="both"` when image and text indices are empty'
-            )
-        if index_type == "image" and not self._img_index.ntotal > 0:
-            return ValueError(
-                'Cannot run query with `index_type=="image"` when image index is empty.'
-            )
-        if index_type == "text" and not self._text_index.ntotal > 0:
-            return ValueError(
-                'Cannot run query with `index_type=="text"` when image index is empty.'
-            )
-
-        if query_type == "image":
-            if isinstance(query, PIL.Image.Image):
-                image = self.transformation(query)
-                with torch.no_grad():
-                    query_vec = self.img_encoder(image).detach().cpu().numpy()
-            else:
-                raise TypeError(
-                    f'Type mismatch: `query_type=="image"` but `query` is of type {type(query)}.'
-                )
-        elif query_type == "text":
-            if isinstance(query, str):
-                text_tokens = self.tokenizer(query)
-                length = len(text_tokens)
-                text_tokens = torch.tensor(text_tokens).unsqueeze(0)
-                with torch.no_grad():
-                    query_vec = (
-                        self.text_encoder(text_tokens, [length]).detach().cpu().numpy()
-                    )
-            else:
-                raise TypeError(
-                    f'Type mismatch: `query_type=="text"` but `query` is of type {type(query)}.'
-                )
-        else:
-            raise ValueError(
-                "`query` must either be a string or instance of `PIL.Image.Image` class."
-            )
-
-        # normalize the vector
-        faiss.normalize_L2(query_vec)
-
-        if index_type == "both":
-            img_dist, img_indices = self._img_index.search(query_vec, top_k)
-            text_dist, text_indices = self._text_index.search(query_vec, top_k)
-
-            # Apply reduction
-            combined_scores = {}
-            for score, idx in zip(img_dist[0], img_indices[0]):
-                combined_scores[idx] = score
-            for score, idx in zip(text_dist[0], text_indices[0]):
-                if idx in combined_scores:
-                    if reduction == "mean":
-                        combined_scores[idx] = (combined_scores[idx] + score) / 2
-                    elif reduction == "sum":
-                        combined_scores[idx] += score
-                    elif reduction == "max":
-                        combined_scores[idx] = max(combined_scores[idx], score)
-
-            indices = sorted(
-                combined_scores, key=lambda k: combined_scores[k], reverse=True
-            )[:top_k]
-
-        elif index_type == "image":
-            dist, indices = self._img_index.search(query_vec, top_k)
-            indices = indices[0]
-        else:
-            dist, indices = self._text_index.search(query_vec, top_k)
-            indices = indices[0]
-
-        # TODO check if sorting by dist is required
-
-        return [self._idx2guid[i] for i in indices]
-
-    def save(self, path):
-        """Save index to directory. This involves saving the Faiss indices as
-        well as id mappings.
-
-        Args:
-            path (str): Path of directory to save the contents of this index.
-        """
-        if not os.path.exists(path):
-            os.makedirs(path)
-
-        logger.info(f"Saving index at {path}")
-
-        img_index_path = os.path.join(path, "img.index")
-        faiss.write_index(self._img_index, img_index_path)
-
-        text_index_path = os.path.join(path, "text.index")
-        faiss.write_index(self._text_index, text_index_path)
-
-        id_mapping = (self._guid2idx, self._idx2guid)
-        id_mapping_path = os.path.join(path, "mappings.pkl")
-        with open(id_mapping_path, "wb") as f:
-            pickle.dump(id_mapping, f)
-
-    def load(self, path):
-        """Load Faiss indices and id mappings.
+    @classmethod
+    def load(cls, path):
+        """Load index from path
 
         Args:
             path (str): Path of directory where the contents of this index is stored.
         """
+        index = cls.__new__(cls)
         if not os.path.exists(path):
             raise FileNotFoundError(f"'{path}' cannot be found.")
 
-        logger.info(f"Loading index from {path}")
+        utils.logger.info(f"Loading index from {path}")
 
-        id_mapping_path = os.path.join(path, "mappings.pkl")
-        with open(id_mapping_path, "rb") as f:
-            self._guid2idx, self._idx2guid = pickle.load(f)
+        doc2idx_path = os.path.join(path, "mapping.pkl")
+        document_path = os.path.join(path, "documents.pkl")
+        schema_path = os.path.join(path, "schema.pkl")
+        recipe_path = os.path.join(path, "recipe.pkl")
+        with open(document_path, "rb") as f:
+            index._idx2doc = pickle.load(f)
+        with open(doc2idx_path, "rb") as f:
+            index._doc2idx = pickle.load(f)
+        with open(schema_path, "rb") as f:
+            index.schema = pickle.load(f)
+        with open(recipe_path, "rb") as f:
+            index.recipe = pickle.load(f)
 
-        img_index_path = os.path.join(path, "img.index")
-        assert os.path.exists(img_index_path)
-        self._img_index = faiss.read_index(img_index_path)
+        index._indices = {}
+        for fname in index.recipe.indexable_fields():
+            index_path = os.path.join(path, f"{fname}.index")
+            if index.recipe[fname]["type"] == "faiss":
+                index._indices[fname] = faiss.read_index(index_path)
+            elif index.recipe[fname]["type"] == "gensim":
+                dictionary = gensim.corpora.Dictionary.load(
+                    os.path.join(path, f"{fname}_gensim.dict")
+                )
+                model = gensim.models.TfidfModel.load(
+                    os.path.join(path, f"{fname}_gensim.model")
+                )
+                matindex = gensim.similarities.SparseMatrixSimilarity.load(
+                    os.path.join(path, f"{fname}_gensim.index")
+                )
+                index._indices[fname] = (dictionary, model, matindex)
 
-        text_index_path = os.path.join(path, "text.index")
-        assert os.path.exists(text_index_path)
-        self._text_index = faiss.read_index(text_index_path)
+        return index

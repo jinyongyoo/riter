@@ -83,13 +83,11 @@
           <div class="row text-center text-lg-left">
             {% for result in results %}
               <div class="col-lg-3 col-md-4 col-6 mb-4">
-                <a href="{{result.img_url}}" class="d-blocks">
-                      <img class="img-fluid img-thumbnail" src="{{result.img_url}}" alt="{{result.captions}}"/>
+                <a href="{{result.url}}" class="d-blocks">
+                      <img class="img-fluid img-thumbnail" src="{{result.url}}" alt="{{result.caption}}"/>
                     </a>
                     <p class="text-muted px-2 text-smaller">
-                        {% for caption in result.captions %}
-                          <span>{{caption}}</span>
-                        {% endfor %}
+                        {{result.caption}}
                     </p>
               </div>
             {% endfor %}

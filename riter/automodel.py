@@ -1,5 +1,5 @@
 from collections import OrderedDict
-from .vsepp import VseppImageEncoder, VseppTextEncoder
+from .zoo.vsepp import VseppImageEncoder, VseppTextEncoder
 
 MODEL_CLS_MAPPING = OrderedDict(
     [
@@ -25,7 +25,7 @@ class AutoModel:
         )
 
     @classmethod
-    def from_pretrained(cls, prebuilt_model_name):
+    def from_pretrained(cls, prebuilt_model_name: str):
         r"""
 
         Examples::
