@@ -20,3 +20,8 @@ Next, please run `python scripts/build_coco_index.py` and `python scripts/build_
 
 ## Running the app locally
 Run `export FLASH_APP=app.py`. Then, run `flask run`. You can checkout the web app by typing in `localhost:9999`
+## Bugs
+If you are encountering a  Error #15: Initializing libiomp5.dylib, but found libomp.dylib already initialized. issue when doing python app.py
+```
+ os.environ['KMP_DUPLICATE_LIB_OK']='True'
+```
