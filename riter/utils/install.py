@@ -49,7 +49,6 @@ def download_if_needed(file_name, folder=False):
     if folder:
         unzip_file(downloaded_file.name, cache_dest_path)
     else:
-        logger.info(f"Copying '{downloaded_file.name}' to '{cache_dest_path}'.")
         shutil.copyfile(downloaded_file.name, cache_dest_path)
     cache_file_lock.release()
     # Remove the temporary file.

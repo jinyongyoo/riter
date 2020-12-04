@@ -3,7 +3,10 @@ from .zoo.vsepp import VseppTokenizer
 
 TOKENIZER_CLS_MAPPING = OrderedDict(
     [
-        ("vsepp-gru-coco", VseppTokenizer),
+        ("vsepp-gru-resnet-coco", VseppTokenizer),
+        ("vsepp-gru-vgg-coco", VseppTokenizer),
+        ("vsepp-gru-resnet-flickr", VseppTokenizer),
+        ("vsepp-gru-vgg-flickr", VseppTokenizer),
     ]
 )
 

@@ -171,6 +171,7 @@ class SimilarityIndex:
                 faiss.normalize_L2(query_vec)
                 scores, indices = self._indices[field_name].search(query_vec, top_k)
                 indices = indices[0]
+                score_sum = np.sum(indices)
                 scores = scores[0]
                 results = zip(indices, scores)
 
@@ -183,9 +184,12 @@ class SimilarityIndex:
                 words = preprocessors[field_name](value)
                 query_bow = dictionary.doc2bow(words)
                 results = list(enumerate(index[model[query_bow]]))
+                score_sum = 0.0
+                for idx, score in results:
+                    score_sum += score
 
             for idx, score in results:
-                total_scores[idx] += score_weights[field_name] * score
+                total_scores[idx] += score_weights[field_name] * score / score_sum
 
             indices = sorted(indices, key=lambda k: total_scores[k], reverse=True)[
                 :top_k

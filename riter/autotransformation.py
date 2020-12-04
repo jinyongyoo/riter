@@ -5,6 +5,8 @@ TRANSFORMATION_CLS_MAPPING = OrderedDict(
     [
         ("vsepp-resnet-coco", VseppTransformation),
         ("vsepp-vgg-coco", VseppTransformation),
+        ("vsepp-resnet-flickr", VseppTransformation),
+        ("vsepp-vgg-flickr", VseppTransformation),
     ]
 )
 

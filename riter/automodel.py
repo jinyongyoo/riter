@@ -5,7 +5,12 @@ MODEL_CLS_MAPPING = OrderedDict(
     [
         ("vsepp-resnet-coco", VseppImageEncoder),
         ("vsepp-vgg-coco", VseppImageEncoder),
-        ("vsepp-gru-coco", VseppTextEncoder),
+        ("vsepp-gru-resnet-coco", VseppTextEncoder),
+        ("vsepp-gru-vgg-coco", VseppTextEncoder),
+        ("vsepp-resnet-flickr", VseppImageEncoder),
+        ("vsepp-vgg-flickr", VseppImageEncoder),
+        ("vsepp-gru-resnet-flickr", VseppTextEncoder),
+        ("vsepp-gru-vgg-flickr", VseppTextEncoder),
     ]
 )
 

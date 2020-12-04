@@ -8,7 +8,12 @@ from .encoders import VSEPP_PATH
 from riter import utils
 
 
-TOKENIZER_MAP = OrderedDict([("vsepp-gru-coco", "vsepp_tokenizer_coco.pkl")])
+TOKENIZER_MAP = OrderedDict([
+    ("vsepp-gru-resnet-coco", "vsepp_tokenizer_coco.pkl"),
+    ("vsepp-gru-vgg-coco", "vsepp_tokenizer_coco.pkl"),
+    ("vsepp-gru-resnet-flickr", "vsepp_tokenizer_flickr.pkl"),
+    ("vsepp-gru-vgg-flickr", "vsepp_tokenizer_flickr.pkl"),
+])
 
 
 class VseppTokenizer:

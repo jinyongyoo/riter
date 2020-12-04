@@ -22,6 +22,16 @@ VSEPP_CONFIGS = OrderedDict(
             },
         ),
         (
+            "vsepp-gru-resnet-coco",
+            {
+                "vocab_size": 11755,
+                "word_dim": 300,
+                "embed_size": 1024,
+                "num_layers": 1,
+                "use_abs": False,
+            },
+        ),
+        (
             "vsepp-vgg-coco",
             {
                 "embed_size": 1024,
@@ -32,9 +42,49 @@ VSEPP_CONFIGS = OrderedDict(
             },
         ),
         (
-            "vsepp-gru-coco",
+            "vsepp-gru-vgg-coco",
             {
                 "vocab_size": 11755,
+                "word_dim": 300,
+                "embed_size": 1024,
+                "num_layers": 1,
+                "use_abs": False,
+            },
+        ),
+        (
+            "vsepp-resnet-flickr",
+            {
+                "embed_size": 1024,
+                "finetune": False,
+                "cnn_type": "resnet152",
+                "use_abs": False,
+                "no_imgnorm": False,
+            },
+        ),
+        (
+            "vsepp-gru-resnet-flickr",
+            {
+                "vocab_size": 8590,
+                "word_dim": 300,
+                "embed_size": 1024,
+                "num_layers": 1,
+                "use_abs": False,
+            },
+        ),
+        (
+            "vsepp-vgg-flickr",
+            {
+                "embed_size": 1024,
+                "finetune": False,
+                "cnn_type": "vgg19",
+                "use_abs": False,
+                "no_imgnorm": False,
+            },
+        ),
+        (
+            "vsepp-gru-vgg-flickr",
+            {
+                "vocab_size": 8590,
                 "word_dim": 300,
                 "embed_size": 1024,
                 "num_layers": 1,
@@ -69,7 +119,7 @@ class VseppImageEncoder(torch.nn.Module):
 
         # Replace the last fully connected layer of CNN with a new one
         if cnn_type.startswith("vgg"):
-            self.fc = torch.nn.Linear(self.cnn["6"].in_features, embed_size)
+            self.fc = torch.nn.Linear(self.cnn.classifier._modules["6"].in_features, embed_size)
             self.cnn.classifier = torch.nn.Sequential(
                 *list(self.cnn.classifier.children())[:-1]
             )

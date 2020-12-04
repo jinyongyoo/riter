@@ -9,14 +9,18 @@ from pycocotools.coco import COCO
 from riter import SimilarityIndex, AutoModel, AutoTokenizer, AutoTransformation
 
 
-INDEX_PATH_DIR = "saved/mscoco"
+COCO_INDEX_PATH_DIR = "saved/mscoco"
+SBU_INDEX_PATH_DIR = "saved/sbu"
 DEBUG = True
 
 
-text_encoder = AutoModel.from_pretrained("vsepp-gru-coco")
-tokenizer = AutoTokenizer.from_pretrained("vsepp-gru-coco")
-val_index = SimilarityIndex.load(os.path.join(INDEX_PATH_DIR, "val_gensim_index"))
-train_index = SimilarityIndex.load(os.path.join(INDEX_PATH_DIR, "train_gensim_index"))
+coco_text_encoder = AutoModel.from_pretrained("vsepp-gru-resnet-coco")
+coco_tokenizer = AutoTokenizer.from_pretrained("vsepp-gru-resnet-coco")
+coco_val_index = SimilarityIndex.load(os.path.join(COCO_INDEX_PATH_DIR, "val_gensim_index"))
+coco_train_index = SimilarityIndex.load(os.path.join(COCO_INDEX_PATH_DIR, "train_gensim_index"))
+sbu_text_encoder = AutoModel.from_pretrained("vsepp-gru-resnet-flickr")
+sbu_tokenizer = AutoTokenizer.from_pretrained("vsepp-gru-resnet-flickr")
+sbu_index = SimilarityIndex.load(SBU_INDEX_PATH_DIR)
 
 stop_words = set(nltk.corpus.stopwords.words("english"))
 stemmer = nltk.stem.PorterStemmer()
@@ -35,26 +39,25 @@ def create_app():
 
     # Actually run search
     @app.route("/")
+    @app.route("/index")
     @app.route("/coco", methods=["GET"])
     def coco_joint_query():
         data = request.args
         query = data.get("query", "dog playing with ball")
         data_split = data.get("split")
-        page_num = data.get("page_num", 1, type=int)
-        page_len = data.get("page_len", 20, type=int)
 
         if data_split is None:
             data_split = "validation"
 
         if data_split == "validation":
-            index = val_index
+            index = coco_val_index
         else:
-            index = train_index
+            index = coco_train_index
 
         results = index.search(
             {"image": query, "caption": query},
-            {"image": text_encoder},
-            {"image": tokenizer, "caption": analyzer},
+            {"image": coco_text_encoder},
+            {"image": coco_tokenizer, "caption": analyzer},
             score_weights={"image": 0.7, "caption": 0.3},
             top_k=20,
             min_score=0.5,
@@ -65,6 +68,29 @@ def create_app():
         return render_template(
             "coco.html", query=query, results=results, split=data_split
         )
+
+    # Actually run search
+    @app.route("/sbu", methods=["GET"])
+    def sbu_joint_query():
+        data = request.args
+        query = data.get("query", "dog playing with ball")
+
+
+        results = sbu_index.search(
+            {"image": query, "caption": query},
+            {"image": sbu_text_encoder},
+            {"image": sbu_tokenizer, "caption": analyzer},
+            score_weights={"image": 0.7, "caption": 0.3},
+            top_k=20,
+            min_score=0.5,
+        )
+
+        results = [r[0] for r in results]
+
+        return render_template(
+            "sbu.html", query=query, results=results,
+        )
+        return render_template("sbu.html")
 
     return app
 
