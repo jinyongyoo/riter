@@ -6,6 +6,11 @@ from .fields import Field
 
 
 class Schema(OrderedDict):
+    """
+    Schema exists because our dataset may not contain just images. There are 
+    other important factors we may care about (e.g captions, image titles, etc..)
+    """
+    
     def __init__(self, *args, **kwargs):
         super(OrderedDict, self).__init__(*args, **kwargs)
 
@@ -24,7 +29,13 @@ class Schema(OrderedDict):
                 return utils.type_check(doc[key], field.dtype)
 
 
+
 class IndexRecipe(OrderedDict):
+    """
+    The data of every field has to be indexed. We have faiss indexing for 
+    images and gensim indexing for texts.
+    """
+
     def __init__(self, *args, **kwargs):
         super(OrderedDict, self).__init__(*args, **kwargs)
 

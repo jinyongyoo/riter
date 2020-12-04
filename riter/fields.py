@@ -1,6 +1,10 @@
 import PIL
 
-
+"""
+Every object is a field which has two parameters.
+1) The type of the data itself (e.g string)
+2) What is that data when it's indexed
+"""
 class Field:
     def __init__(self, dtype, indexed):
         self.dtype = dtype
