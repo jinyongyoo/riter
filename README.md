@@ -11,6 +11,3 @@ Lastly, for VSE++ models, you need to install resource for `nltk`, which is used
 >>> import nltk
 >>> nltk.download('punkt')
 ```
-
-## Getting Started
-TBD
