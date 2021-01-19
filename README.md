@@ -1,6 +1,8 @@
 # RITER: Real-time Image Text Embedding Retreival
 Riter connects image-text retreival methods from vision and NLP literature and Facebook's Faiss library to provide an easy way to build image-text retrieval systems. Riter also have pretrained models for joint image and text embeddings that users can use easily.
 
+This started as a course project for CS 6501 Vision & Language course. It's currently on hold for now, but development will resume in the future. 
+
 ## Installation
 First, clone this repo, `cd` into it, and run `pip install -e .` This should also install the required dependencies. 
 
@@ -11,3 +13,4 @@ Lastly, for VSE++ models, you need to install resource for `nltk`, which is used
 >>> import nltk
 >>> nltk.download('punkt')
 ```
+
