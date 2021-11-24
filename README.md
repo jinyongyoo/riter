@@ -16,4 +16,4 @@ Lastly, for VSE++ models, you need to install resource for `nltk`, which is used
 
 ## Video Demo
 
-[![](https://www.youtube.com/watch?v=Rp7vR6k1Vvg)](https://www.youtube.com/watch?v=Rp7vR6k1Vvg)
+[Demo](https://www.youtube.com/watch?v=Rp7vR6k1Vvg)
